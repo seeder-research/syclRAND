@@ -1,0 +1,7 @@
+The files in this directory should contain only function definitions. These functions will
+be called within the kernel to generate ONLY cl_uint or cl_ulong bit-streams
+
+A file for common function definitions is needed. These common functions are used to
+1) convert cl_uint and cl_ulong random numbers into cl_float and cl_double without
+   requiring the underlying hardware to support cl_double
+2) compute the inverse CDF for some commonly used probability distributions (e.g., normal)
