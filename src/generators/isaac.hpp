@@ -1,7 +1,9 @@
 #ifndef __ISAAC_RNG__
 #define __ISAAC_RNG__
 
+#ifndef __SYCLRAND_CLASS
 #include "common/syclrand_def.hpp"
+#endif
 
 /**
 @file
