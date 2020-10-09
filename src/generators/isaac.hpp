@@ -3,7 +3,7 @@
 
 #ifndef __SYCLRAND_CLASS
 #include "common/syclrand_def.hpp"
-#endif
+#endif __SYCLRAND_CLASS
 
 /**
 @file
@@ -119,7 +119,7 @@ class isaac_seed_by_value_kernel {
 	public:
 	    using state_accessor =
 		    sycl::accessor<isaac_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
-		isaac_rng_kernel(ulong val,
+		isaac_seed_by_value_kernel(ulong val,
 			state_accessor statePtr)
 		: seedVal(val),
 		  stateBuf(statePtr) {}
@@ -149,7 +149,7 @@ class isaac_seed_by_array_kernel {
 		    sycl::accessor<isaac_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
 	    using input_accessor =
 		    sycl::accessor<ulong, 1, sycl::access::mode::read, sycl::access::target::global_buffer>;
-		isaac_rng_kernel(input_accessor seedArr,
+		isaac_seed_by_array_kernel(input_accessor seedArr,
 			state_accessor statePtr)
 		: seedArr(seedArr),
 		  stateBuf(statePtr) {}
