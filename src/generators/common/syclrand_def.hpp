@@ -1,8 +1,14 @@
+/*
+This file defines the SyCLRAND container class.
+The underlying PRNG object is defined in the constructor
+*/
+
+#ifndef __SYCLRAND_BASE_CLASS
+#define __SYCLRAND_BASE_CLASS
+#ifndef __SYCLRAND_CLASS
 #include "CL/sycl.hpp"
 #include <vector>
-
-#ifndef __SYCLRAND_CLASS
-#define __SYCLRAND_CLASS
+#endif // __SYCLRAND_CLASS
 
 class _SyCLRAND {
 	public:
@@ -25,4 +31,4 @@ class _SyCLRAND {
 		seed_accessor         seedBuf;
 };
 
-#endif
+#endif // __SYCLRAND_BASE_CLASS

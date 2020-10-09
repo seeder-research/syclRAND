@@ -1,9 +1,9 @@
 #ifndef __ISAAC_RNG__
 #define __ISAAC_RNG__
 
-#ifndef __SYCLRAND_CLASS
+#ifndef __SYCLRAND_BASE_CLASS
 #include "common/syclrand_def.hpp"
-#endif __SYCLRAND_CLASS
+#endif // __SYCLRAND_BASE_CLASS
 
 /**
 @file
@@ -247,4 +247,4 @@ void ISAAC_PRNG::generate_uint(sycl::queue funcQueue,
     });
 }
 
-#endif __ISAAC_RNG__
+#endif // __ISAAC_RNG__

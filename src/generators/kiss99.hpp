@@ -1,9 +1,9 @@
 #ifndef __KISS99_RNG__
 #define __KISS99_RNG__
 
-#ifndef __SYCLRAND_CLASS
+#ifndef __SYCLRAND_BASE_CLASS
 #include "common/syclrand_def.hpp"
-#endif __SYCLRAND_CLASS
+#endif // __SYCLRAND_BASE_CLASS
 
 
 /**
