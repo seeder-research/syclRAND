@@ -129,13 +129,6 @@ void mt19937_seed(mt19937_state* state, uint s){
 	state->mti=mti;
 }
 
-/**
-Generates a random 64-bit unsigned integer using MT19937 RNG.
-
-@param state State of the RNG to use.
-*/
-#define mt19937_ulong(state) ((((ulong)mt19937_uint(state)) << 32) | mt19937_uint(state))
-
 // Kernel function
 // Seed RNG by single ulong
 class mt19937_seed_by_value_kernel {
