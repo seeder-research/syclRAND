@@ -1,11 +1,10 @@
-#define R 16
+#ifndef __WELL512_RNG__
+#define __WELL512_RNG__
 
-typedef struct{
-        unsigned int s[R];
-        unsigned int i;
-}well512_state;
+#ifndef __SYCLRAND_BASE_CLASS
+#include "common/syclrand_def.hpp"
+#endif // __SYCLRAND_BASE_CLASS
 
-const char * well512_prng_kernel = R"EOK(
 /**
 @file
 
@@ -111,31 +110,138 @@ void well512_seed(well512_state* state, unsigned long j){
 	}
 }
 
-/**
-Generates a random 64-bit unsigned integer using WELL RNG.
+// Kernel function
+// Seed RNG by single ulong
+class well512_seed_by_value_kernel {
+	public:
+	    using state_accessor =
+		    sycl::accessor<well512_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+		well512_seed_by_value_kernel(ulong val,
+			state_accessor statePtr)
+		: seedVal(val),
+		  stateBuf(statePtr) {}
+		void operator()(sycl::nd_item<1> item) {
+            uint gid=get_global_linear_id(0);
+            ulong seed = (ulong)(gid);
+            seed <<= 1;
+            seed += seedVal;
+            if (seed == 0) {
+                seed += 1;
+            }
+            well512_state state;
+            well512_seed(&state, seed);
+            stateBuf[gid] = state;
+		}
 
-@param state State of the RNG to use.
-*/
-#define well512_ulong(state) ((((ulong)well512_uint(state)) << 32) | well512_uint(state))
+	private:
+		ulong           seedVal;
+		state_accessor  stateBuf;
+};
 
-/**
-Generates a random float using WELL RNG.
+// Kernel function
+// Seed RNG by array of ulong
+class well512_seed_by_array_kernel {
+	public:
+	    using state_accessor =
+		    sycl::accessor<well512_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+	    using input_accessor =
+		    sycl::accessor<ulong, 1, sycl::access::mode::read, sycl::access::target::global_buffer>;
+		well512_seed_by_array_kernel(input_accessor seedArr,
+			state_accessor statePtr)
+		: seedArr(seedArr),
+		  stateBuf(statePtr) {}
+		void operator()(sycl::nd_item<1> item) {
+            uint gid=get_global_id(0);
+            ulong seed = seedArr[gid];
+            well512_state state;
+            well512_seed(&state,seed);
+            stateBuf[gid] = state;
+		}
 
-@param state State of the RNG to use.
-*/
-#define well512_float(state) (well512_uint(state)*WELL512_FLOAT_MULTI)
+	private:
+		state_accessor  stateBuf;
+		input_accessor  seedArr;
+};
 
-/**
-Generates a random double using WELL RNG.
+// Kernel function
+// Generate random uint
+class well512_rng_kernel{
+	public:
+	    using state_accessor =
+		    sycl::accessor<well512_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+	    using output_accessor =
+		    sycl::accessor<dataT, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+		well512_rng_kernel(int count,
+			state_accessor statePtr,
+			output_accessor dstPtr)
+		: num(count),
+		  stateBuf(statePtr),
+		  res(dstPtr) {}
+		void operator()(sycl::nd_item<1> item) {
+            uint gid=get_global_linear_id();
+            uint gsize=get_num_range(0);
+            well512_state state;
+            state = stateBuf[gid];
+            for(uint i=gid;i<num;i+=gsize) {
+                res[i]= well512_uint(state);
+            }
+            stateBuf[gid] = state;
+		}
 
-@param state State of the RNG to use.
-*/
-#define well512_double(state) (well512_ulong(state)*WELL512_DOUBLE_MULTI)
+	private:
+		int             num;
+		state_accessor  stateBuf;
+		output_accessor res;
+};
 
-/**
-Generates a random double using WELL RNG. Generated using only 32 random bits.
+// Class function
+// Launch kernel to seed RNG by single ulong
+void WELL512_PRNG::seed_by_value(sycl::queue funcQueue,
+				               size_t gsize,
+				               size_t lsize) {
 
-@param state State of the RNG to use.
-*/
-#define well512_double2(state) (well512_uint(state)*WELL512_DOUBLE2_MULTI)
-)EOK";
+    funcQueue.submit([&] (sycl::handler& cgh) {
+        auto state_acc = this->stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
+		// If seed by value, we will use the first element in seedArr as the value
+		seedVal = this->seedArr.data()[0];
+
+        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
+		                                   sycl::range<1>(lsize)),
+		                 well512_seed_by_value_kernel(seedVal, state_acc));
+    });
+}
+
+// Class function
+// Launch kernel to seed RNG by an array of ulong
+void WELL512_PRNG::seed_by_array(sycl::queue funcQueue,
+				 size_t gsize,
+				 size_t lsize) {
+
+    funcQueue.submit([&] (sycl::handler& cgh) {
+        auto state_acc = this->stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
+		this->seedBuf = cl::sycl::buffer<ulong, 1>(&this->seedArr, cl::sycl::range<1>(this->seedArr.size()));
+        auto seed_acc = this->seedBuf->template get_access<sycl::access::mode::read>(cgh);
+
+        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
+		                                   sycl::range<1>(lsize)),
+		                 well512_seed_by_array_kernel(seed_acc, state_acc));
+    });
+}
+
+void WELL512_PRNG::generate_uint(sycl::queue funcQueue,
+				int count,
+                sycl::buffer<uint, 1> &dst,
+				size_t gsize,
+				size_t lsize) {
+
+    funcQueue.submit([&] (sycl::handler& cgh) {
+        auto state_acc = stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
+        auto dst_acc = dst->template get_access<sycl::access::mode::read>(cgh);
+
+        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
+		                                   sycl::range<1>(lsize)),
+		                 well512_rng_kernel(count, state_acc, dst_acc));
+    });
+}
+
+#endif // __WELL512_RNG__
