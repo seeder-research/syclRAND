@@ -1,8 +1,10 @@
-typedef struct{
-        uint x10, x11, x12, x20, x21, x22;
-} mrg31k3p_state;
+#ifndef __MRG31K3P_RNG__
+#define __MRG31K3P_RNG__
 
-const char * mrg31k3p_prng_kernel = R"EOK(
+#ifndef __SYCLRAND_BASE_CLASS
+#include "common/syclrand_def.hpp"
+#endif // __SYCLRAND_BASE_CLASS
+
 /**
 @file
 
@@ -123,24 +125,138 @@ Generates a random 64-bit unsigned integer using mrg31k3p RNG.
 */
 #define mrg31k3p_ulong(state) ((((ulong)mrg31k3p_uint(state)) << 32) | mrg31k3p_uint(state))
 
-/**
-Generates a random float using mrg31k3p RNG.
+// Kernel function
+// Seed RNG by single ulong
+class mrg31k3p_seed_by_value_kernel {
+	public:
+	    using state_accessor =
+		    sycl::accessor<mrg31k3p_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+		mrg31k3p_seed_by_value_kernel(ulong val,
+			state_accessor statePtr)
+		: seedVal(val),
+		  stateBuf(statePtr) {}
+		void operator()(sycl::nd_item<1> item) {
+            uint gid=get_global_linear_id(0);
+            ulong seed = (ulong)(gid);
+            seed <<= 1;
+            seed += seedVal;
+            if (seed == 0) {
+                seed += 1;
+            }
+            mrg31k3p_state state;
+            mrg31k3p_seed(&state, seed);
+            stateBuf[gid] = state;
+		}
 
-@param state State of the RNG to use.
-*/
-#define mrg31k3p_float(state) (mrg31k3p_uint(state)*MRG31K3P_FLOAT_MULTI)
+	private:
+		ulong           seedVal;
+		state_accessor  stateBuf;
+};
 
-/**
-Generates a random double using mrg31k3p RNG.
+// Kernel function
+// Seed RNG by array of ulong
+class mrg31k3p_seed_by_array_kernel {
+	public:
+	    using state_accessor =
+		    sycl::accessor<mrg31k3p_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+	    using input_accessor =
+		    sycl::accessor<ulong, 1, sycl::access::mode::read, sycl::access::target::global_buffer>;
+		mrg31k3p_seed_by_array_kernel(input_accessor seedArr,
+			state_accessor statePtr)
+		: seedArr(seedArr),
+		  stateBuf(statePtr) {}
+		void operator()(sycl::nd_item<1> item) {
+            uint gid=get_global_id(0);
+            ulong seed = seedArr[gid];
+            mrg31k3p_state state;
+            mrg31k3p_seed(&state,seed);
+            stateBuf[gid] = state;
+		}
 
-@param state State of the RNG to use.
-*/
-#define mrg31k3p_double(state) (mrg31k3p_ulong(state)*MRG31K3P_DOUBLE2_MULTI + mrg31k3p_ulong(state)*MRG31K3P_DOUBLE_MULTI)
+	private:
+		state_accessor  stateBuf;
+		input_accessor  seedArr;
+};
 
-/**
-Generates a random double using mrg31k3p RNG. Generated using only 32 random bits.
+// Kernel function
+// Generate random uint
+class mrg31k3p_rng_kernel{
+	public:
+	    using state_accessor =
+		    sycl::accessor<mrg31k3p_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+	    using output_accessor =
+		    sycl::accessor<dataT, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+		mrg31k3p_rng_kernel(int count,
+			state_accessor statePtr,
+			output_accessor dstPtr)
+		: num(count),
+		  stateBuf(statePtr),
+		  res(dstPtr) {}
+		void operator()(sycl::nd_item<1> item) {
+            uint gid=get_global_linear_id();
+            uint gsize=get_num_range(0);
+            mrg31k3p_state state;
+            state = stateBuf[gid];
+            for(uint i=gid;i<num;i+=gsize) {
+                res[i]= mrg31k3p_uint(state);
+            }
+            stateBuf[gid] = state;
+		}
 
-@param state State of the RNG to use.
-*/
-#define mrg31k3p_double2(state) (mrg31k3p_uint(state)*MRG31K3P_DOUBLE2_MULTI)
-)EOK";
+	private:
+		int             num;
+		state_accessor  stateBuf;
+		output_accessor res;
+};
+
+// Class function
+// Launch kernel to seed RNG by single ulong
+void MRG31K3P_PRNG::seed_by_value(sycl::queue funcQueue,
+				               size_t gsize,
+				               size_t lsize) {
+
+    funcQueue.submit([&] (sycl::handler& cgh) {
+        auto state_acc = this->stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
+		// If seed by value, we will use the first element in seedArr as the value
+		seedVal = this->seedArr.data()[0];
+
+        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
+		                                   sycl::range<1>(lsize)),
+		                 mrg31k3p_seed_by_value_kernel(seedVal, state_acc));
+    });
+}
+
+// Class function
+// Launch kernel to seed RNG by an array of ulong
+void MRG31K3P_PRNG::seed_by_array(sycl::queue funcQueue,
+				 size_t gsize,
+				 size_t lsize) {
+
+    funcQueue.submit([&] (sycl::handler& cgh) {
+        auto state_acc = this->stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
+		this->seedBuf = cl::sycl::buffer<ulong, 1>(&this->seedArr, cl::sycl::range<1>(this->seedArr.size()));
+        auto seed_acc = this->seedBuf->template get_access<sycl::access::mode::read>(cgh);
+
+        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
+		                                   sycl::range<1>(lsize)),
+		                 mrg31k3p_seed_by_array_kernel(seed_acc, state_acc));
+    });
+}
+
+void MRG31K3P_PRNG::generate_uint(sycl::queue funcQueue,
+				int count,
+                sycl::buffer<uint, 1> &dst,
+				size_t gsize,
+				size_t lsize) {
+
+    funcQueue.submit([&] (sycl::handler& cgh) {
+        auto state_acc = stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
+        auto dst_acc = dst->template get_access<sycl::access::mode::read>(cgh);
+
+        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
+		                                   sycl::range<1>(lsize)),
+		                 mrg31k3p_rng_kernel(count, state_acc, dst_acc));
+    });
+}
+
+#endif // __MRG31K3P_RNG__
