@@ -40,7 +40,7 @@ generates a random 32-bit unsigned integer using xorshift1024 RNG.
 
 @param stateblock pointer to buffer in local memory, that holds state of the generator.
 */
-uint xorshift1024_uint(local xorshift1024_state* stateblock){
+uint xorshift1024_uint(xorshift1024_state* stateblock, sycl::nd_item<1> item){
 	/* Indices. */
 	int tid = get_local_id(0) + get_local_size(0) * (get_local_id(1) + get_local_size(1) * get_local_id(2));
 	int wid = tid / XORSHIFT1024_WARPSIZE; // Warp index in block
@@ -57,24 +57,24 @@ uint xorshift1024_uint(local xorshift1024_state* stateblock){
 	state = stateblock[woff + lid]; // Read states
 	state ^= stateblock[woff + lp] << XORSHIFT1024_RAND_A; // Left part
 	state ^= stateblock[woff + lp + 1] >> (XORSHIFT1024_WORD - XORSHIFT1024_RAND_A); // Right part
-	barrier(CLK_LOCAL_MEM_FENCE);
+	item.barrier(sycl::access::fence_space::local_space); // Synchronize before continuing execution
 
 	/* >> B. */
 	stateblock[woff + lid] = state; // Share states
-	barrier(CLK_LOCAL_MEM_FENCE);
+	item.barrier(sycl::access::fence_space::local_space); // Synchronize before continuing execution
 	state ^= stateblock[woff + lm - 1] << (XORSHIFT1024_WORD - XORSHIFT1024_RAND_B); // Left part
 	state ^= stateblock[woff + lm] >> XORSHIFT1024_RAND_B; // Right part
-	barrier(CLK_LOCAL_MEM_FENCE);
+	item.barrier(sycl::access::fence_space::local_space); // Synchronize before continuing execution
 
 	/* << C. */
 	stateblock[woff + lid] = state; // Share states
-	barrier(CLK_LOCAL_MEM_FENCE);
+	item.barrier(sycl::access::fence_space::local_space); // Synchronize before continuing execution
 	state ^= stateblock[woff + lp] << XORSHIFT1024_RAND_C; // Left part
 	state ^= stateblock[woff + lp + 1] >> (XORSHIFT1024_WORD - XORSHIFT1024_RAND_C); // Right part
-	barrier(CLK_LOCAL_MEM_FENCE);
+	item.barrier(sycl::access::fence_space::local_space); // Synchronize before continuing execution
 
 	stateblock[woff + lid] = state; // Share states
-	barrier(CLK_LOCAL_MEM_FENCE);
+	item.barrier(sycl::access::fence_space::local_space); // Synchronize before continuing execution
 
 	return state;
 }
@@ -85,7 +85,7 @@ Seeds xorshift1024 RNG
 @param stateblock Buffer in local memory, that holds state of the generator to be seeded.
 @param seed Value used for seeding. Should be randomly generated for each instance of generator (thread).
 */
-void xorshift1024_seed(local xorshift1024_state* stateblock, ulong seed){
+void xorshift1024_seed(xorshift1024_state* globalstate, xorshift1024_state* stateblock, ulong seed, sycl::nd_item<1> item){
 	int tid = get_local_id(0) + get_local_size(0) * (get_local_id(1) + get_local_size(1) * get_local_id(2));
 	int wid = tid / XORSHIFT1024_WARPSIZE; // Warp index in block
 	int lid = tid % XORSHIFT1024_WARPSIZE; // Thread index in warp
@@ -108,20 +108,25 @@ void xorshift1024_seed(local xorshift1024_state* stateblock, ulong seed){
 	}
 	stateblock[woff + lid] = (uint)seed;
 	//printf("%d seed set\n",(uint)get_local_id(0));
-	barrier(CLK_LOCAL_MEM_FENCE);
+	item.barrier(sycl::access::fence_space::local_space); // Synchronize before continuing execution
 	//printf("%d after barrier\n",(uint)get_local_id(0));
+	globalstate[tid] = stateblock[lid];
 }
 
 // Kernel function
 // Seed RNG by single ulong
 class xorshift1024_seed_by_value_kernel {
 	public:
-	    using state_accessor =
+	    using state_accessor_global =
 		    sycl::accessor<xorshift1024_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+	    using state_accessor_local =
+		    sycl::accessor<xorshift1024_state, 1, sycl::access::mode::read_write, sycl::access::target::local>;
 		xorshift1024_seed_by_value_kernel(ulong val,
-			state_accessor statePtr)
+			state_accessor_global statePtr,
+			state_accessor_local localState)
 		: seedVal(val),
-		  stateBuf(statePtr) {}
+		  stateBuf(statePtr),
+		  localBuf(localState) {}
 		void operator()(sycl::nd_item<1> item) {
             uint gid=get_global_linear_id(0);
             ulong seed = (ulong)(gid);
@@ -130,75 +135,83 @@ class xorshift1024_seed_by_value_kernel {
             if (seed == 0) {
                 seed += 1;
             }
-            xorshift1024_state state;
-            xorshift1024_seed(&state, seed);
-            stateBuf[gid] = state;
+            xorshift1024_seed(&stateBuf, &localBuf, seed, &item);
 		}
 
 	private:
-		ulong           seedVal;
-		state_accessor  stateBuf;
+		ulong                  seedVal;
+		state_accessor_global  stateBuf;
+		state_accessor_local   localBuf;
 };
 
 // Kernel function
 // Seed RNG by array of ulong
 class xorshift1024_seed_by_array_kernel {
 	public:
-	    using state_accessor =
+	    using state_accessor_global =
 		    sycl::accessor<xorshift1024_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+	    using state_accessor_local =
+		    sycl::accessor<xorshift1024_state, 1, sycl::access::mode::read_write, sycl::access::target::local>;
 	    using input_accessor =
 		    sycl::accessor<ulong, 1, sycl::access::mode::read, sycl::access::target::global_buffer>;
 		xorshift1024_seed_by_array_kernel(input_accessor seedArr,
-			state_accessor statePtr)
+			state_accessor_global statePtr,
+			state_accessor_local localState)
 		: seedArr(seedArr),
-		  stateBuf(statePtr) {}
+		  stateBuf(statePtr),
+		  localBuf(localState) {}
 		void operator()(sycl::nd_item<1> item) {
             uint gid=get_global_id(0);
             ulong seed = seedArr[gid];
-            xorshift1024_state state;
-            xorshift1024_seed(&state,seed);
-            stateBuf[gid] = state;
+            xorshift1024_seed(&stateBuf, &localBuf, seed, &item);
 		}
 
 	private:
-		state_accessor  stateBuf;
-		input_accessor  seedArr;
+		state_accessor_local   localBuf;
+		state_accessor_global  stateBuf;
+		input_accessor         seedArr;
 };
 
 // Kernel function
 // Generate random uint
 class xorshift1024_rng_kernel{
 	public:
-	    using state_accessor =
+	    using state_accessor_global =
 		    sycl::accessor<xorshift1024_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
+	    using state_accessor_local =
+		    sycl::accessor<xorshift1024_state, 1, sycl::access::mode::read_write, sycl::access::target::local>;
 	    using output_accessor =
 		    sycl::accessor<dataT, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
 		xorshift1024_rng_kernel(int count,
-			state_accessor statePtr,
+			state_accessor_global statePtr,
+			state_accessor_local localState,
 			output_accessor dstPtr)
 		: num(count),
 		  stateBuf(statePtr),
+		  localBuf(localState),
 		  res(dstPtr) {}
 		void operator()(sycl::nd_item<1> item) {
-            uint gid=get_global_linear_id();
-            uint gsize=get_num_range(0);
-            xorshift1024_state state;
-            state = stateBuf[gid];
+			int tid = get_local_id(0) + get_local_size(0) * (get_local_id(1) + get_local_size(1) * get_local_id(2));
+			int wid = tid / XORSHIFT1024_WARPSIZE; // Warp index in block
+			int lid = tid % XORSHIFT1024_WARPSIZE; // Thread index in warp
+            localBuf[lid] = stateBuf[tid]; // Load state into local buffer
+			item.barrier(sycl::access::fence_space::local_space); // Synchronize before beginning execution
             for(uint i=gid;i<num;i+=gsize) {
-                res[i]= xorshift1024_uint(state);
+                res[i]= xorshift1024_uint(&localBuf, &item); // Generate random numbers
             }
-            stateBuf[gid] = state;
+            stateBuf[tid] = localBuf[lid]; // Copy state from local buffer back to glocal buffer on exit
 		}
 
 	private:
-		int             num;
-		state_accessor  stateBuf;
-		output_accessor res;
+		int                    num;
+		state_accessor_global  stateBuf;
+		state_accessor_local   localBuf;
+		output_accessor        res;
 };
 
 // Class function
 // Launch kernel to seed RNG by single ulong
-void XORSHIFT6432STAR_PRNG::seed_by_value(sycl::queue funcQueue,
+void XORSHIFT1024_PRNG::seed_by_value(sycl::queue funcQueue,
 				               size_t gsize,
 				               size_t lsize) {
 
@@ -206,16 +219,21 @@ void XORSHIFT6432STAR_PRNG::seed_by_value(sycl::queue funcQueue,
         auto state_acc = this->stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
 		// If seed by value, we will use the first element in seedArr as the value
 		seedVal = this->seedArr.data()[0];
+        sycl::accessor<xorshift1024_state,
+		               1,
+		               sycl::access::mode::read_write,
+		               sycl::access::target::local>
+		  local_acc(sycl::range<1>(lsize), cgh);
 
         cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
 		                                   sycl::range<1>(lsize)),
-		                 xorshift1024_seed_by_value_kernel(seedVal, state_acc));
+		                 xorshift1024_seed_by_value_kernel(seedVal, state_acc, local_acc));
     });
 }
 
 // Class function
 // Launch kernel to seed RNG by an array of ulong
-void XORSHIFT6432STAR_PRNG::seed_by_array(sycl::queue funcQueue,
+void XORSHIFT1024_PRNG::seed_by_array(sycl::queue funcQueue,
 				 size_t gsize,
 				 size_t lsize) {
 
@@ -223,14 +241,19 @@ void XORSHIFT6432STAR_PRNG::seed_by_array(sycl::queue funcQueue,
         auto state_acc = this->stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
 		this->seedBuf = cl::sycl::buffer<ulong, 1>(&this->seedArr, cl::sycl::range<1>(this->seedArr.size()));
         auto seed_acc = this->seedBuf->template get_access<sycl::access::mode::read>(cgh);
+        sycl::accessor<xorshift1024_state,
+		               1,
+		               sycl::access::mode::read_write,
+		               sycl::access::target::local>
+		  local_acc(sycl::range<1>(lsize), cgh);
 
         cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
 		                                   sycl::range<1>(lsize)),
-		                 xorshift1024_seed_by_array_kernel(seed_acc, state_acc));
+		                 xorshift1024_seed_by_array_kernel(seed_acc, state_acc, local_acc));
     });
 }
 
-void XORSHIFT6432STAR_PRNG::generate_uint(sycl::queue funcQueue,
+void XORSHIFT1024_PRNG::generate_uint(sycl::queue funcQueue,
 				int count,
                 sycl::buffer<uint, 1> &dst,
 				size_t gsize,
@@ -239,10 +262,15 @@ void XORSHIFT6432STAR_PRNG::generate_uint(sycl::queue funcQueue,
     funcQueue.submit([&] (sycl::handler& cgh) {
         auto state_acc = stateBuf->template get_access<sycl::access::mode::read_write>(cgh);
         auto dst_acc = dst->template get_access<sycl::access::mode::read>(cgh);
+        sycl::accessor<xorshift1024_state,
+		               1,
+		               sycl::access::mode::read_write,
+		               sycl::access::target::local>
+		  local_acc(sycl::range<1>(lsize), cgh);
 
         cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>(gsize),
 		                                   sycl::range<1>(lsize)),
-		                 xorshift1024_rng_kernel(count, state_acc, dst_acc));
+		                 xorshift1024_rng_kernel(count, state_acc, local_acc, dst_acc));
     });
 }
 
