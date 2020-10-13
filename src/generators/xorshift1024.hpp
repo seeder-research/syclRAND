@@ -40,9 +40,10 @@ generates a random 32-bit unsigned integer using xorshift1024 RNG.
 
 @param stateblock pointer to buffer in local memory, that holds state of the generator.
 */
+inline
 uint xorshift1024_uint(xorshift1024_state* stateblock, sycl::nd_item<1> item){
 	/* Indices. */
-	int tid = get_local_id(0) + get_local_size(0) * (get_local_id(1) + get_local_size(1) * get_local_id(2));
+	int tid = item.get_global_linear_id();
 	int wid = tid / XORSHIFT1024_WARPSIZE; // Warp index in block
 	int lid = tid % XORSHIFT1024_WARPSIZE; // Thread index in warp
 	int woff = wid * (XORSHIFT1024_WARPSIZE + XORSHIFT1024_WORDSHIFT + 1) + XORSHIFT1024_WORDSHIFT + 1;
@@ -86,7 +87,7 @@ Seeds xorshift1024 RNG
 @param seed Value used for seeding. Should be randomly generated for each instance of generator (thread).
 */
 void xorshift1024_seed(xorshift1024_state* globalstate, xorshift1024_state* stateblock, ulong seed, sycl::nd_item<1> item){
-	int tid = get_local_id(0) + get_local_size(0) * (get_local_id(1) + get_local_size(1) * get_local_id(2));
+	int tid = item.get_global_linear_id(); // Expecting kernel to launched in 1d style (num_threads, threads_per_workgroup)
 	int wid = tid / XORSHIFT1024_WARPSIZE; // Warp index in block
 	int lid = tid % XORSHIFT1024_WARPSIZE; // Thread index in warp
 	int woff = wid * (XORSHIFT1024_WARPSIZE + XORSHIFT1024_WORDSHIFT + 1) + XORSHIFT1024_WORDSHIFT + 1;
@@ -191,7 +192,7 @@ class xorshift1024_rng_kernel{
 		  localBuf(localState),
 		  res(dstPtr) {}
 		void operator()(sycl::nd_item<1> item) {
-			int tid = get_local_id(0) + get_local_size(0) * (get_local_id(1) + get_local_size(1) * get_local_id(2));
+			int tid = item.get_global_linear_id();
 			int wid = tid / XORSHIFT1024_WARPSIZE; // Warp index in block
 			int lid = tid % XORSHIFT1024_WARPSIZE; // Thread index in warp
             localBuf[lid] = stateBuf[tid]; // Load state into local buffer
