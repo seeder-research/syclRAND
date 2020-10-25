@@ -40,21 +40,19 @@ typedef struct{
   uint idx;
 } isaac_state;
 
+typedef sycl::accessor<isaac_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer> state_accessor;
+typedef sycl::accessor<ulong, 1, sycl::access::mode::read, sycl::access::target::global_buffer> input_accessor;
+typedef sycl::accessor<uint, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer> output_accessor;
+
 /* Isaac class */
 class ISAAC_PRNG : _SyCLRAND {
-	public:
-	    using state_accessor = 
-		      sycl::accessor<isaac_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
-		using output_accessor = 
-			  sycl::accessor<uint, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
-		using seed_accessor = 
-		      sycl::accessor<ulong, 1, sycl::access::mode::read, sycl::access::target::global_buffer>;
-		void seed_by_value(cl::sycl::queue funcQueue, size_t gsize, size_t lsize);
-		void seed_by_array(cl::sycl::queue funcQueue, size_t gsize, size_t lsize);
-		void generate_uint(cl::sycl::queue funcQueue, int count, cl::sycl::buffer &dst, size_t gsize, size_t lsize);
-	private:
-	    state_accessor      stateBuf;
-		isaac_state         *stateArr;
+    public:
+        void seed_by_value(cl::sycl::queue funcQueue, size_t gsize, size_t lsize);
+        void seed_by_array(cl::sycl::queue funcQueue, size_t gsize, size_t lsize);
+        void generate_uint(cl::sycl::queue funcQueue, int count, cl::sycl::buffer<uint, 1> &dst, size_t gsize, size_t lsize);
+    private:
+        sycl::buffer<isaac_state, 1>    stateBuf;
+        isaac_state                     *stateArr;
 };
 
 // Functions for ISAAC RNG
@@ -86,59 +84,50 @@ inline void isaac_seed(isaac_state* state, ulong j);
 // Kernel function
 // Seed RNG by single ulong
 class isaac_seed_by_value_kernel {
-	public:
-	    using state_accessor =
-		    sycl::accessor<isaac_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
-		isaac_seed_by_value_kernel(ulong val,
-			state_accessor statePtr)
-		: seedVal(val),
-		  stateBuf(statePtr) {}
-		void operator()(sycl::nd_item<1> item);
+    public:
+        isaac_seed_by_value_kernel(ulong val,
+                                   state_accessor statePtr)
+            : seedVal(val),
+              stateBuf(statePtr) {}
+        void operator()(sycl::nd_item<1> item);
 
-	private:
-		ulong           seedVal;
-		state_accessor  stateBuf;
+    private:
+        ulong           seedVal;
+        state_accessor  stateBuf;
 };
 
 // Kernel function
 // Seed RNG by array of ulong
 class isaac_seed_by_array_kernel {
-	public:
-	    using state_accessor =
-		    sycl::accessor<isaac_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
-	    using input_accessor =
-		    sycl::accessor<ulong, 1, sycl::access::mode::read, sycl::access::target::global_buffer>;
-		isaac_seed_by_array_kernel(input_accessor seedArr,
-			state_accessor statePtr)
-		: seedArr(seedArr),
-		  stateBuf(statePtr) {}
-		void operator()(sycl::nd_item<1> item);
+    public:
+        isaac_seed_by_array_kernel(input_accessor seedArr,
+                                   state_accessor statePtr)
+        : seedArr(seedArr),
+	  stateBuf(statePtr) {}
 
-	private:
-		state_accessor  stateBuf;
-		input_accessor  seedArr;
+        void operator()(sycl::nd_item<1> item);
+
+    private:
+        state_accessor  stateBuf;
+        input_accessor  seedArr;
 };
 
 // Kernel function
 // Generate random uint
 class isaac_rng_kernel{
-	public:
-	    using state_accessor =
-		    sycl::accessor<isaac_state, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
-	    using output_accessor =
-		    sycl::accessor<dataT, 1, sycl::access::mode::read_write, sycl::access::target::global_buffer>;
-		isaac_rng_kernel(int count,
-			state_accessor statePtr,
-			output_accessor dstPtr)
-		: num(count),
-		  stateBuf(statePtr),
-		  res(dstPtr) {}
-		void operator()(sycl::nd_item<1> item);
+    public:
+        isaac_rng_kernel(int count,
+                         state_accessor statePtr,
+                         output_accessor dstPtr)
+            : num(count),
+              stateBuf(statePtr),
+              res(dstPtr) {}
+        void operator()(sycl::nd_item<1> item);
 
-	private:
-		int             num;
-		state_accessor  stateBuf;
-		output_accessor res;
+    private:
+        int             num;
+        state_accessor  stateBuf;
+        output_accessor res;
 };
 
 #endif // __ISAAC_RNG__
